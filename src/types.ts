@@ -34,3 +34,8 @@ export interface Usuario {
   password?: string; // Agregamos la contraseña
   rol: RolUsuario;
 }
+
+export interface Autorizado {
+  id: string;
+  nombre: string;
+}

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import type { SolicitudPermiso, EstadoPermiso, TrabajadorNomina, Usuario, RolUsuario } from './types';
 import { db } from './firebase';
-import { collection, doc, setDoc, deleteDoc, updateDoc, onSnapshot } from 'firebase/firestore';
+import { collection, doc, setDoc, addDoc, deleteDoc, updateDoc, onSnapshot } from 'firebase/firestore';
 
 import { FormularioPermiso } from './components/FormularioPermiso';
 import { HistorialPermisos } from './components/HistorialPermisos';
@@ -9,10 +9,16 @@ import { ComprobantePermiso } from './components/ComprobantePermiso';
 import { ResumenMensual } from './components/ResumenMensual';
 import { GestionNomina } from './components/GestionNomina';
 import { GestionUsuarios } from './components/GestionUsuarios';
+import { GestionAutorizados } from './components/GestionAutorizados'; // <-- Nuevo componente de gestión
 import { Login } from './components/Login';
 
+// Interfaz local si no está en types.ts
+export interface Autorizado {
+  id: string;
+  nombre: string;
+}
+
 export function App() {
-  // Estado para el usuario autenticado actual (persiste en localStorage)
   const [usuarioLogueado, setUsuarioLogueado] = useState<Usuario | null>(() => {
     const saved = localStorage.getItem('sindicato_sesion_activa');
     return saved ? JSON.parse(saved) : null;
@@ -21,17 +27,16 @@ export function App() {
   const [usuarios, setUsuarios] = useState<Usuario[]>([]);
   const [solicitudes, setSolicitudes] = useState<SolicitudPermiso[]>([]);
   const [nomina, setNomina] = useState<TrabajadorNomina[]>([]);
+  const [autorizados, setAutorizados] = useState<Autorizado[]>([]); // <-- Estado para autorizados
   
   const [solicitudSeleccionada, setSolicitudSeleccionada] = useState<SolicitudPermiso | null>(null);
-  const [vistaActiva, setVistaActiva] = useState<'gestion' | 'resumen' | 'nomina' | 'usuarios'>('gestion');
+  const [vistaActiva, setVistaActiva] = useState<'gestion' | 'resumen' | 'nomina' | 'usuarios' | 'autorizados'>('gestion');
+  const [mostrarAlertaConciliacion, setMostrarAlertaConciliacion] = useState(true);
 
-  // Sincronización en tiempo real con Firebase Firestore
   useEffect(() => {
-    // 1. Escuchar Usuarios en tiempo real
     const unsubUsuarios = onSnapshot(collection(db, 'usuarios'), (snapshot) => {
       const listaUsuarios: Usuario[] = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Usuario));
       if (listaUsuarios.length === 0) {
-        // Sembrar datos iniciales si la colección está vacía
         const iniciales: Omit<Usuario, 'id'>[] = [
           { nombre: 'Super Administrador', email: 'super@sindicato.cl', password: '1234', rol: 'superadmin' },
           { nombre: 'Administrador General', email: 'admin@sindicato.cl', password: '1234', rol: 'admin' },
@@ -46,13 +51,18 @@ export function App() {
       }
     });
 
-    // 2. Escuchar Solicitudes en tiempo real
     const unsubSolicitudes = onSnapshot(collection(db, 'solicitudes'), (snapshot) => {
-      const listaSolicitudes: SolicitudPermiso[] = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as SolicitudPermiso));
+      const listaSolicitudes: SolicitudPermiso[] = snapshot.docs.map(doc => {
+        const data = doc.data() as any;
+        return {
+          ...data,
+          id: data.folioVisual || data.id || doc.id,
+          firebaseId: doc.id
+        } as SolicitudPermiso;
+      });
       setSolicitudes(listaSolicitudes);
     });
 
-    // 3. Escuchar Nómina en tiempo real
     const unsubNomina = onSnapshot(collection(db, 'nomina'), (snapshot) => {
       const listaNomina: TrabajadorNomina[] = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as TrabajadorNomina));
       if (listaNomina.length === 0) {
@@ -69,14 +79,30 @@ export function App() {
       }
     });
 
+    // --- SINCRONIZACIÓN DE AUTORIZADOS EN FIREBASE ---
+    const unsubAutorizados = onSnapshot(collection(db, 'autorizados'), (snapshot) => {
+      const listaAutorizados: Autorizado[] = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Autorizado));
+      if (listaAutorizados.length === 0) {
+        const autorizadosIniciales: Omit<Autorizado, 'id'>[] = [
+          { nombre: 'Dr. Javier Pérez' },
+          { nombre: 'María Silva (Administración)' }
+        ];
+        autorizadosIniciales.forEach(async (a) => {
+          await setDoc(doc(collection(db, 'autorizados')), a);
+        });
+      } else {
+        setAutorizados(listaAutorizados);
+      }
+    });
+
     return () => {
       unsubUsuarios();
       unsubSolicitudes();
       unsubNomina();
+      unsubAutorizados();
     };
   }, []);
 
-  // Guardar sesión activa localmente
   useEffect(() => {
     if (usuarioLogueado) {
       localStorage.setItem('sindicato_sesion_activa', JSON.stringify(usuarioLogueado));
@@ -95,45 +121,97 @@ export function App() {
     setUsuarioLogueado(null);
   };
 
-  // Funciones de negocio conectadas a Firebase Cloud Firestore
+  const anioActual = new Date().getFullYear();
+  const horasConciliacionUsadas = solicitudes.filter(sol => {
+    const nombreSol = String(sol.nombreTrabajador || '').trim().toLowerCase();
+    const nombreLogueado = String(usuarioLogueado.nombre || '').trim().toLowerCase();
+    const esDelTrabajador = nombreSol === nombreLogueado;
+    const esAnioActual = new Date(sol.fechaInicio).getFullYear() === anioActual;
+    const motivoStr = String(sol.motivo || '').toLowerCase().trim();
+    return esDelTrabajador && esAnioActual && motivoStr.includes('conciliaci');
+  }).reduce((acc) => acc + 8.5, 0);
+
+  const horasConciliacionRestantes = Math.max(0, 17 - horasConciliacionUsadas);
+
   const agregarSolicitud = async (nueva: Omit<SolicitudPermiso, 'id'>) => {
     if (rolUsuario === 'visualizador') {
       alert('⚠️ Los visualizadores no tienen permisos para crear solicitudes.');
       return;
     }
+
+    const anioSolicitud = new Date(nueva.fechaInicio).getFullYear();
+    const motivoStr = String(nueva.motivo || '').toLowerCase().trim();
+    const esConciliacion = motivoStr.includes('conciliaci');
+
+    if (esConciliacion) {
+      const trabajadorNuevo = String(nueva.nombreTrabajador || '').trim().toLowerCase();
+      const solicitudesAnioColaborador = solicitudes.filter(sol => {
+        const mismoTrabajador = String(sol.nombreTrabajador || '').trim().toLowerCase() === trabajadorNuevo;
+        const esDelAnio = new Date(sol.fechaInicio).getFullYear() === anioSolicitud;
+        const motivoSol = String(sol.motivo || '').toLowerCase().trim();
+        return mismoTrabajador && esDelAnio && motivoSol.includes('conciliaci');
+      });
+
+      const horasYaUsadas = solicitudesAnioColaborador.length * 8.5;
+      const horasNuevas = 8.5;
+
+      if (horasYaUsadas + horasNuevas > 17) {
+        alert(`❌ Límite excedido: El colaborador ${nueva.nombreTrabajador} ya cuenta con ${horasYaUsadas} hora(s) de conciliación usadas este año (${anioSolicitud}). El máximo permitido son 17 horas (2 días). Le quedan ${Math.max(0, 17 - horasYaUsadas)} horas disponibles.`);
+        return;
+      }
+    }
+
     try {
-      const nuevoId = String(solicitudes.length + 1).padStart(3, '0');
-      await setDoc(doc(db, 'solicitudes', nuevoId), { ...nueva, id: nuevoId });
-      alert('¡Solicitud creada y guardada en la nube con éxito!');
+      let maxFolio = 0;
+      solicitudes.forEach(sol => {
+        const num = parseInt(sol.id, 10);
+        if (!isNaN(num) && num > maxFolio) {
+          maxFolio = num;
+        }
+      });
+      const nuevoFolio = String(maxFolio + 1).padStart(3, '0');
+
+      await addDoc(collection(db, 'solicitudes'), {
+        ...nueva,
+        id: nuevoFolio,
+        folioVisual: nuevoFolio
+      });
+      
+      alert(`¡Solicitud creada con éxito! Folio asignado: #${nuevoFolio}`);
     } catch (error) {
       console.error("Error al agregar solicitud:", error);
       alert('Hubo un error al guardar en Firebase.');
     }
   };
 
-  const cambiarEstado = async (id: string, nuevoEstado: EstadoPermiso) => {
+  const cambiarEstado = async (solicitudItem: any, nuevoEstado: EstadoPermiso) => {
     if (rolUsuario === 'visualizador' || rolUsuario === 'digitador') {
       alert('⚠️ Tu rol actual no tiene permisos para cambiar el estado de las solicitudes.');
       return;
     }
     try {
-      const docRef = doc(db, 'solicitudes', id);
+      const targetId = solicitudItem.firebaseId || solicitudItem.id;
+      const docRef = doc(db, 'solicitudes', targetId);
       await updateDoc(docRef, { estado: nuevoEstado });
     } catch (error) {
       console.error("Error al cambiar estado:", error);
+      alert('Error al actualizar el estado en Firebase.');
     }
   };
 
-  const eliminarSolicitud = async (id: string) => {
+  const eliminarSolicitud = async (solicitudItem: any) => {
     if (rolUsuario !== 'admin' && rolUsuario !== 'superadmin') {
       alert('⚠️ Solo los administradores pueden eliminar registros.');
       return;
     }
     if (window.confirm('¿Estás seguro de eliminar este registro?')) {
       try {
-        await deleteDoc(doc(db, 'solicitudes', id));
+        const targetId = solicitudItem.firebaseId || solicitudItem.id;
+        const docRef = doc(db, 'solicitudes', targetId);
+        await deleteDoc(docRef);
       } catch (error) {
         console.error("Error al eliminar:", error);
+        alert('Error al eliminar de Firebase.');
       }
     }
   };
@@ -185,18 +263,42 @@ export function App() {
     alert(`Carga masiva completada en la nube. Se omitieron ${duplicadosCount} duplicados.`);
   };
 
-  // 🔒 RESTRICCIÓN: Solo el 'superadmin' puede crear usuarios
+  // --- FUNCIONES PARA GESTIÓN DE AUTORIZADOS ---
+  const agregarAutorizado = async (nombre: string) => {
+    if (rolUsuario === 'visualizador') {
+      alert('⚠️ Los visualizadores no pueden modificar los autorizados.');
+      return;
+    }
+    try {
+      const idUnico = Date.now().toString();
+      await setDoc(doc(db, 'autorizados', idUnico), { id: idUnico, nombre });
+      alert('¡Funcionario autorizado agregado con éxito!');
+    } catch (error) {
+      console.error("Error al agregar autorizado:", error);
+    }
+  };
+
+  const eliminarAutorizado = async (id: string) => {
+    if (rolUsuario !== 'admin' && rolUsuario !== 'superadmin') {
+      alert('⚠️ Solo los administradores pueden eliminar autorizados.');
+      return;
+    }
+    try {
+      await deleteDoc(doc(db, 'autorizados', id));
+    } catch (error) {
+      console.error("Error al eliminar autorizado:", error);
+    }
+  };
+
   const agregarUsuario = async (nuevo: Omit<Usuario, 'id'>) => {
     if (rolUsuario !== 'superadmin') {
       alert('⚠️ Solo el SuperAdministrador tiene permisos para crear nuevos usuarios.');
       return;
     }
-    
     if (usuarios.some(u => u.email.trim().toLowerCase() === nuevo.email.trim().toLowerCase())) {
       alert('⚠️ Ya existe un usuario registrado con ese correo electrónico.');
       return;
     }
-
     try {
       const idUnico = Date.now().toString();
       await setDoc(doc(db, 'usuarios', idUnico), { ...nuevo, id: idUnico });
@@ -218,7 +320,6 @@ export function App() {
     }
   };
 
-  // 🔒 RESTRICCIÓN: Solo el 'superadmin' puede cambiar contraseñas
   const cambiarPasswordUsuario = async (id: string, nuevaPassword: string) => {
     if (rolUsuario !== 'superadmin') {
       alert('⚠️ Solo el SuperAdmin tiene permisos para cambiar contraseñas de usuarios.');
@@ -245,11 +346,28 @@ export function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#FDFBF7] text-[#2C241D]">
-      <div className="sticky top-0 z-50 bg-[#FDFBF7] pt-6 pb-4 px-4 sm:px-6 lg:px-8 shadow-sm">
+    <div className="min-h-screen bg-[#FDFBF7] text-[#2C241D] relative">
+      
+      {mostrarAlertaConciliacion && rolUsuario !== 'superadmin' && (
+        <div className="fixed bottom-5 right-5 z-50 bg-white border-l-4 border-[#8B5A2B] p-4 rounded-xl shadow-2xl flex items-center gap-4 max-w-sm transition-all duration-300">
+          <div>
+            <p className="text-xs font-bold text-[#5C4033] uppercase">📅 Conciliación ({anioActual})</p>
+            <p className="text-sm text-[#2C241D]">
+              Te quedan <span className="font-bold text-[#8B5A2B]">{horasConciliacionRestantes} de 17 horas</span> (2 días) disponibles este año.
+            </p>
+          </div>
+          <button 
+            onClick={() => setMostrarAlertaConciliacion(false)}
+            className="text-gray-400 hover:text-gray-600 font-bold text-lg cursor-pointer"
+          >
+            &times;
+          </button>
+        </div>
+      )}
+
+      <div className="sticky top-0 z-40 bg-[#FDFBF7] pt-6 pb-4 px-4 sm:px-6 lg:px-8 shadow-sm">
         <div className="max-w-5xl mx-auto space-y-4">
           
-          {/* Barra de Sesión Activa */}
           <div className="bg-white p-3 rounded-xl shadow-md border border-[#E6E0D5] flex items-center justify-between">
             <div className="flex items-center gap-2 text-sm">
               <span className="font-semibold text-[#5C4033]">Sesión Iniciada (Cloud):</span>
@@ -293,17 +411,25 @@ export function App() {
               📊 Resumen Mensual por Horas
             </button>
             {rolUsuario !== 'visualizador' && (
-              <button
-                onClick={() => setVistaActiva('nomina')}
-                className={`px-4 sm:px-6 py-2 rounded-lg font-semibold text-sm transition ${
-                  vistaActiva === 'nomina' ? 'bg-[#8B5A2B] text-white shadow' : 'text-[#5C4033] hover:bg-[#EBE5D8]'
-                }`}
-              >
-                👥 Gestión de Nómina
-              </button>
+              <>
+                <button
+                  onClick={() => setVistaActiva('nomina')}
+                  className={`px-4 sm:px-6 py-2 rounded-lg font-semibold text-sm transition ${
+                    vistaActiva === 'nomina' ? 'bg-[#8B5A2B] text-white shadow' : 'text-[#5C4033] hover:bg-[#EBE5D8]'
+                  }`}
+                >
+                  👥 Gestión de Nómina
+                </button>
+                <button
+                  onClick={() => setVistaActiva('autorizados')}
+                  className={`px-4 sm:px-6 py-2 rounded-lg font-semibold text-sm transition ${
+                    vistaActiva === 'autorizados' ? 'bg-[#8B5A2B] text-white shadow' : 'text-[#5C4033] hover:bg-[#EBE5D8]'
+                  }`}
+                >
+                  ✍️ Funcionarios Autorizados
+                </button>
+              </>
             )}
-            
-            {/* 🔒 RESTRICCIÓN DE VISIBILIDAD: Solo el 'superadmin' verá la pestaña de usuarios */}
             {rolUsuario === 'superadmin' && (
               <button
                 onClick={() => setVistaActiva('usuarios')}
@@ -324,12 +450,22 @@ export function App() {
           {vistaActiva === 'gestion' ? (
             <div className="space-y-8">
               {rolUsuario !== 'visualizador' && (
-                <FormularioPermiso onAgregarSolicitud={agregarSolicitud} nominaPersonal={nomina} />
+                <FormularioPermiso 
+                  onAgregarSolicitud={agregarSolicitud} 
+                  nominaPersonal={nomina} 
+                  listaAutorizados={autorizados} // <-- Pasamos la lista dinámica al formulario
+                />
               )}
               <HistorialPermisos
                 solicitudes={solicitudes}
-                onCambiarEstado={cambiarEstado}
-                onEliminar={eliminarSolicitud}
+                onCambiarEstado={(id, estado) => {
+                  const encontrada = solicitudes.find(s => s.id === id || (s as any).firebaseId === id);
+                  cambiarEstado(encontrada || id, estado);
+                }}
+                onEliminar={(id) => {
+                  const encontrada = solicitudes.find(s => s.id === id || (s as any).firebaseId === id);
+                  eliminarSolicitud(encontrada || id);
+                }}
                 onVerComprobante={(sol) => setSolicitudSeleccionada(sol)}
               />
             </div>
@@ -342,7 +478,13 @@ export function App() {
               onEliminarTrabajador={eliminarTrabajadorNomina}
               onCargaMasiva={agregarNominaMasiva}
             />
-          ) : rolUsuario === 'superadmin' ? (
+          ) : vistaActiva === 'autorizados' && rolUsuario !== 'visualizador' ? (
+            <GestionAutorizados
+              autorizados={autorizados}
+              onAgregarAutorizado={agregarAutorizado}
+              onEliminarAutorizado={eliminarAutorizado}
+            />
+          ) : rolUsuario === 'superadmin' && vistaActiva === 'usuarios' ? (
             <GestionUsuarios
               usuarios={usuarios}
               onAgregarUsuario={agregarUsuario}

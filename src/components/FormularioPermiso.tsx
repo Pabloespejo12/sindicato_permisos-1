@@ -1,12 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import type { SolicitudPermiso, TrabajadorNomina } from '../types';
 
+interface Autorizado {
+  id: string;
+  nombre: string;
+}
+
 interface Props {
   onAgregarSolicitud: (solicitud: Omit<SolicitudPermiso, 'id'>) => void;
   nominaPersonal: TrabajadorNomina[];
+  listaAutorizados: Autorizado[];
 }
 
-export const FormularioPermiso: React.FC<Props> = ({ onAgregarSolicitud, nominaPersonal }) => {
+export const FormularioPermiso: React.FC<Props> = ({ onAgregarSolicitud, nominaPersonal, listaAutorizados }) => {
   const [nombreTrabajador, setNombreTrabajador] = useState('');
   const [rut, setRut] = useState('');
   const [motivo, setMotivo] = useState('Particulares');
@@ -19,7 +25,7 @@ export const FormularioPermiso: React.FC<Props> = ({ onAgregarSolicitud, nominaP
   const [horaRegreso, setHoraRegreso] = useState('');
   const [fechaInicio, setFechaInicio] = useState('');
   const [fechaFin, setFechaFin] = useState('');
-  const [jefeSeccion, setJefeSeccion] = useState('');
+  const [autorizadoPor, setAutorizadoPor] = useState('');
   const [observaciones, setObservaciones] = useState('');
 
   // Efecto "BUSCARV" para autocompletar el RUT
@@ -40,6 +46,11 @@ export const FormularioPermiso: React.FC<Props> = ({ onAgregarSolicitud, nominaP
     e.preventDefault();
     if (!nombreTrabajador || !rut) {
       alert('Por favor seleccione un trabajador válido.');
+      return;
+    }
+
+    if (!autorizadoPor) {
+      alert('Por favor seleccione quién autoriza el permiso.');
       return;
     }
 
@@ -107,12 +118,12 @@ export const FormularioPermiso: React.FC<Props> = ({ onAgregarSolicitud, nominaP
 
     const totalCalculado = esPorDias 
       ? `${cantidadDias} día(s)` 
-      : `${cantidadHoras.replace('.', ',')} hrs`;
+      : `${cantidadHoras.replace(',', '.')} hrs`;
 
     onAgregarSolicitud({
       nombreTrabajador: nombreTrabajador.toUpperCase(),
       rut,
-      cargo: jefeSeccion,
+      cargo: autorizadoPor,
       tipoPermiso: esPorDias ? 'Administrativo (Días)' : 'Administrativo (Horas)',
       fechaInicio: fInicio,
       fechaFin: fFin,
@@ -129,6 +140,7 @@ export const FormularioPermiso: React.FC<Props> = ({ onAgregarSolicitud, nominaP
     setHoraSalida('');
     setHoraRegreso('');
     setObservaciones('');
+    setAutorizadoPor('');
     alert('¡Solicitud enviada con éxito!');
   };
 
@@ -283,14 +295,20 @@ export const FormularioPermiso: React.FC<Props> = ({ onAgregarSolicitud, nominaP
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Jefe de Sección</label>
-            <input
-              type="text"
-              value={jefeSeccion}
-              onChange={(e) => setJefeSeccion(e.target.value)}
-              placeholder="Ej. Dr. Javier Pérez"
+            <label className="block text-sm font-medium text-slate-700 mb-1">Autorizado por</label>
+            <select
+              value={autorizadoPor}
+              onChange={(e) => setAutorizadoPor(e.target.value)}
+              required
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
+            >
+              <option value="">-- Seleccione un autorizador --</option>
+              {listaAutorizados.map((auth) => (
+                <option key={auth.id} value={auth.nombre}>
+                  {auth.nombre}
+                </option>
+              ))}
+            </select>
           </div>
         </div>
 

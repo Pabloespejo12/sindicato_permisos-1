@@ -53,10 +53,18 @@ export const HistorialPermisos: React.FC<Props> = ({
       return acc;
     }, 0);
 
-  const handleEliminarClick = (id: string) => {
-    if (window.confirm(`¿Estás seguro de que deseas eliminar la solicitud #${id}?`)) {
-      onEliminar(id);
+  const handleEliminarClick = (sol: SolicitudPermiso) => {
+    // Usamos el id de firebase si existe (o sol.id como respaldo)
+    const targetId = (sol as any).firebaseId || sol.id;
+    if (window.confirm(`¿Estás seguro de que deseas eliminar la solicitud #${sol.id}?`)) {
+      onEliminar(targetId);
     }
+  };
+
+  const handleCambiarEstadoClick = (sol: SolicitudPermiso, nuevoEstado: EstadoPermiso) => {
+    // Usamos el id de firebase si existe (o sol.id como respaldo)
+    const targetId = (sol as any).firebaseId || sol.id;
+    onCambiarEstado(targetId, nuevoEstado);
   };
 
   return (
@@ -205,7 +213,7 @@ export const HistorialPermisos: React.FC<Props> = ({
                       {sol.estado !== 'Aprobado' && (
                         <button
                           type="button"
-                          onClick={() => onCambiarEstado(sol.id, 'Aprobado')}
+                          onClick={() => handleCambiarEstadoClick(sol, 'Aprobado')}
                           className="px-2.5 py-1 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded text-xs font-medium transition cursor-pointer"
                         >
                           Aprobar
@@ -215,7 +223,7 @@ export const HistorialPermisos: React.FC<Props> = ({
                       {sol.estado !== 'Rechazado' && (
                         <button
                           type="button"
-                          onClick={() => onCambiarEstado(sol.id, 'Rechazado')}
+                          onClick={() => handleCambiarEstadoClick(sol, 'Rechazado')}
                           className="px-2.5 py-1 bg-amber-50 text-amber-700 hover:bg-amber-100 rounded text-xs font-medium transition cursor-pointer"
                         >
                           Rechazar
@@ -224,7 +232,7 @@ export const HistorialPermisos: React.FC<Props> = ({
 
                       <button
                         type="button"
-                        onClick={() => handleEliminarClick(sol.id)}
+                        onClick={() => handleEliminarClick(sol)}
                         className="px-2.5 py-1 bg-red-50 text-red-600 hover:bg-red-100 rounded text-xs font-medium transition cursor-pointer"
                         title="Eliminar solicitud"
                       >
